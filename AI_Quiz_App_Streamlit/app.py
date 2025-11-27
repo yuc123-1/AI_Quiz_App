@@ -1,7 +1,7 @@
 import streamlit as st
 import json
 import random
-import os # 新增: 用於檢查檔案
+import os
 from PIL import Image
 from google import genai
 from google.genai.errors import APIError
@@ -9,7 +9,7 @@ from google.genai.errors import APIError
 # --- 配置區 ---
 API_KEY = "AIzaSyCd214KXU0JCD_FRx1IEpCAiC9R39z7H1M" 
 MODEL_NAME = "gemini-2.5-flash"
-DATA_FILE = "quiz_data.json" # 新增: 數據儲存檔案名稱
+DATA_FILE = "quiz_data.json"
 
 # 初始化 Gemini 客戶端
 try:
@@ -19,7 +19,7 @@ except ValueError:
     st.stop()
 
 # ----------------------------------------------------
-# A. 數據持久化函數 (新增)
+# A. 數據持久化函數
 # ----------------------------------------------------
 
 def load_data():
@@ -48,14 +48,11 @@ def save_data(data):
 def initialize_session_state():
     """初始化 Streamlit Session State，並讀取持久化數據。"""
     
-    # 🌟 核心修改: 啟動時載入數據
     persisted_data = load_data()
     
-    # 結構: { '科目': { '類別': { '單元': { 'all': [題目], 'wrong': [錯題] } } } }
     if 'SUBJECT_DATA' not in st.session_state:
         st.session_state.SUBJECT_DATA = persisted_data 
     
-    # ... (其他狀態初始化不變)
     if 'app_state' not in st.session_state:
         st.session_state.app_state = "SELECT_SUBJECT" 
         
@@ -134,6 +131,18 @@ def call_gemini_extraction(contents, source_id):
         st.warning(f"處理來源 {source_id} 時發生錯誤。請檢查輸入內容和格式。")
         st.exception(e)
         return []
+
+def find_quiz_location(quiz):
+    """(新增) 根據題目內容反向查找該題目在 SUBJECT_DATA 中的位置"""
+    for sub, sub_data in st.session_state.SUBJECT_DATA.items():
+        for cat, cat_data in sub_data.items():
+            for unit, unit_data in cat_data.items():
+                # 檢查 all 和 wrong 清單
+                if quiz in unit_data['all']:
+                    return sub, cat, unit, 'all'
+                if quiz in unit_data['wrong']:
+                    return sub, cat, unit, 'wrong'
+    return None, None, None, None
 
 def get_quizzes_by_scope(scope_subject, scope_category=None, scope_unit=None):
     """根據範圍返回所有題目 (all 和 wrong)"""
@@ -318,7 +327,7 @@ def show_unit_details():
                 start_quiz(unit_data['all'], 'quiz_all')
 
 def show_browse_unit_page():
-    """新增頁面：瀏覽單元內全部題目與答案 (新增)"""
+    """新增頁面：瀏覽單元內全部題目與答案"""
     sub = st.session_state.CURRENT_SUBJECT
     cat = st.session_state.CURRENT_CATEGORY
     unit = st.session_state.CURRENT_UNIT
@@ -408,7 +417,7 @@ def show_add_quiz_page():
 
             if new_quizzes:
                 CURRENT_ALL_QUIZZES.extend(new_quizzes)
-                save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                save_data(st.session_state.SUBJECT_DATA)
                 st.success(f"🎉 處理完成！總共新增 **{len(new_quizzes)}** 道題目。")
                 st.caption(f"當前單元總題數：{len(CURRENT_ALL_QUIZZES)}")
 
@@ -446,7 +455,7 @@ def show_add_quiz_page():
                     
                     if quizzes:
                         CURRENT_ALL_QUIZZES.extend(quizzes)
-                        save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                        save_data(st.session_state.SUBJECT_DATA)
                         st.success(f"🎉 文字內容成功提取 **{len(quizzes)}** 道題目。")
                         st.caption(f"當前單元總題數：{len(CURRENT_ALL_QUIZZES)}")
                         
@@ -456,7 +465,7 @@ def show_add_quiz_page():
                         st.error("⚠️ 無法從您輸入的文字中提取出結構化的題目。請檢查格式是否正確。")
 
 def show_edit_quiz_page():
-    """新增頁面：手動編輯題目內容 (新增)"""
+    """手動編輯題目內容 (新增)"""
     
     st.title("✏️ 編輯題目內容")
     st.caption("用於修正 AI 偵測錯誤的題目、答案或解析。")
@@ -465,6 +474,7 @@ def show_edit_quiz_page():
     quiz_index = st.session_state.edit_quiz_index
     list_key = st.session_state.edit_quiz_list_key
 
+    # 確定要編輯哪個清單
     if list_key == 'all':
         quiz_list, _ = get_current_unit_lists()
     elif list_key == 'current_quiz_list':
@@ -505,7 +515,7 @@ def show_edit_quiz_page():
         quiz_list[quiz_index]['correct_answer'] = new_correct_answer
         quiz_list[quiz_index]['explanation'] = new_explanation
         
-        save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+        save_data(st.session_state.SUBJECT_DATA)
         st.success("🎉 題目內容已成功更新！")
         
         # 導航回原來的頁面
@@ -563,7 +573,8 @@ def show_quiz_page():
     
     selected_option = st.radio("請選擇答案：", options_with_label, key=f"user_answer_radio_{current_index}")
     
-    with st.container(): # 使用 Container 隔離 Form，避免 Form 影響全局的 Rerun
+    # 使用 Container 隔離 Form，確保下一題按鈕功能獨立
+    with st.container():
         
         submit_col, edit_col = st.columns([0.6, 0.4])
         submitted = submit_col.button("✅ 提交答案", type="primary", key=f"submit_button_{current_index}")
@@ -581,17 +592,23 @@ def show_quiz_page():
                         if wrong_quiz['question'] == quiz['question'] and wrong_quiz['source_image'] == quiz['source_image']:
                             del CURRENT_WRONG_QUIZZES[i]
                             st.toast("👏 該錯題已掌握，從錯題清單中移除。")
-                            save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                            save_data(st.session_state.SUBJECT_DATA)
                             break
                             
             else:
                 st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
                 
-                is_already_wrong = any(w['question'] == quiz['question'] for w in CURRENT_WRONG_QUIZZES)
-                if st.session_state.quiz_mode == 'quiz_all' and not is_already_wrong:
-                    st.session_state.SUBJECT_DATA[st.session_state.CURRENT_SUBJECT][st.session_state.CURRENT_CATEGORY][st.session_state.CURRENT_UNIT]['wrong'].append(quiz)
-                    st.toast("😥 題目已加入當前單元的錯題清單。")
-                    save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                # 🌟 核心修正：錯題紀錄時，必須找到它原本所屬的單元清單
+                sub, cat, unit, _ = find_quiz_location(quiz)
+                
+                if sub and cat and unit:
+                    wrong_list_target = st.session_state.SUBJECT_DATA[sub][cat][unit]['wrong']
+                    is_already_wrong = any(w['question'] == quiz['question'] for w in wrong_list_target)
+
+                    if st.session_state.quiz_mode == 'quiz_all' and not is_already_wrong:
+                        wrong_list_target.append(quiz)
+                        st.toast("😥 題目已加入原單元的錯題清單。")
+                        save_data(st.session_state.SUBJECT_DATA)
                 
             # 顯示詳解卡片
             with st.expander("📖 查看詳細解析", expanded=True):
@@ -599,19 +616,20 @@ def show_quiz_page():
                 st.markdown("#### 完整解析：")
                 st.markdown(quiz['explanation'])
 
-            # 下一題按鈕 (修復邏輯：使用 st.session_state 狀態來控制下一步)
+            # 設置下一題按鈕狀態
             st.session_state[f'show_next_{current_index}'] = True
             
         
         # 手動編輯按鈕 (在 Form 外，但受提交狀態影響)
-        if edit_col.button("✏️ 編輯題目", key=f"edit_quiz_{current_index}", disabled=not submitted):
+        if edit_col.button("✏️ 編輯題目", key=f"edit_quiz_{current_index}"):
              st.session_state.edit_quiz_index = current_index
              st.session_state.edit_quiz_list_key = 'current_quiz_list' 
              navigate_to("EDIT_QUIZ")
     
-    # 下一題按鈕
+    # 下一題按鈕 (修復邏輯)
     if st.session_state.get(f'show_next_{current_index}', False):
-        if st.button("➡️ 下一題", key=f"next_button_outside_{current_index}"):
+        st.markdown("---")
+        if st.button("➡️ 下一題", key=f"next_button_outside_{current_index}", type="primary"):
             st.session_state.current_quiz_index += 1
             st.session_state[f'show_next_{current_index}'] = False # 重置按鈕狀態
             st.rerun()
@@ -642,7 +660,7 @@ def main_app():
         if st.button("創建科目", key="side_create_subject_btn"):
             if new_subject_name and new_subject_name not in st.session_state.SUBJECT_DATA:
                 st.session_state.SUBJECT_DATA[new_subject_name] = {}
-                save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                save_data(st.session_state.SUBJECT_DATA)
                 st.success(f"科目 '{new_subject_name}' 創建成功！")
                 st.session_state.CURRENT_SUBJECT = new_subject_name
                 navigate_to("SELECT_SUBJECT")
@@ -656,7 +674,7 @@ def main_app():
             if st.button("創建類別", key="side_create_category_btn"):
                 if new_category_name and new_category_name not in st.session_state.SUBJECT_DATA[current_sub]:
                     st.session_state.SUBJECT_DATA[current_sub][new_category_name] = {}
-                    save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                    save_data(st.session_state.SUBJECT_DATA)
                     st.success(f"類別 '{new_category_name}' 創建成功！")
                     st.session_state.CURRENT_CATEGORY = new_category_name
                     navigate_to("SELECT_CATEGORY")
@@ -670,7 +688,7 @@ def main_app():
             if st.button("創建單元", key="side_create_unit_btn"):
                 if new_unit_name and new_unit_name not in st.session_state.SUBJECT_DATA[current_sub][current_cat]:
                     st.session_state.SUBJECT_DATA[current_sub][current_cat][new_unit_name] = {'all': [], 'wrong': []}
-                    save_data(st.session_state.SUBJECT_DATA) # 🌟 核心修改: 保存數據
+                    save_data(st.session_state.SUBJECT_DATA)
                     st.success(f"單元 '{new_unit_name}' 創建成功！")
                     st.session_state.CURRENT_UNIT = new_unit_name
                     navigate_to("UNIT_DETAIL")
