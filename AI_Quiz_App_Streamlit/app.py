@@ -7,9 +7,10 @@ from google import genai
 from google.genai.errors import APIError
 
 # --- 配置區 ---
+# ⚠️ 注意：請確保此處的金鑰是您有效的 Gemini API 金鑰
 API_KEY = "AIzaSyCd214KXU0JCD_FRx1IEpCAiC9R39z7H1M" 
 MODEL_NAME = "gemini-2.5-flash"
-DATA_FILE = "quiz_data.json"
+DATA_FILE = "quiz_data.json" # 數據儲存檔案名稱
 
 # 初始化 Gemini 客戶端
 try:
@@ -53,9 +54,11 @@ def initialize_session_state():
     if 'SUBJECT_DATA' not in st.session_state:
         st.session_state.SUBJECT_DATA = persisted_data 
     
+    # 用於管理主介面的導航狀態
     if 'app_state' not in st.session_state:
         st.session_state.app_state = "SELECT_SUBJECT" 
         
+    # 當前選中的層級 ID
     if 'CURRENT_SUBJECT' not in st.session_state:
         st.session_state.CURRENT_SUBJECT = None
     if 'CURRENT_CATEGORY' not in st.session_state:
@@ -63,6 +66,7 @@ def initialize_session_state():
     if 'CURRENT_UNIT' not in st.session_state:      
         st.session_state.CURRENT_UNIT = None
     
+    # 測驗狀態
     if 'quiz_mode' not in st.session_state:
         st.session_state.quiz_mode = 'quiz_all' 
     if 'current_quiz_index' not in st.session_state:
@@ -70,9 +74,11 @@ def initialize_session_state():
     if 'current_quiz_list' not in st.session_state:
         st.session_state.current_quiz_list = [] 
     
+    # 文字輸入框的初始值 (用於自動清空)
     if 'manual_quiz_input' not in st.session_state:
         st.session_state.manual_quiz_input = ""
     
+    # 儲存單前正在編輯的題目索引
     if 'edit_quiz_index' not in st.session_state:
         st.session_state.edit_quiz_index = None
 
@@ -133,7 +139,7 @@ def call_gemini_extraction(contents, source_id):
         return []
 
 def find_quiz_location(quiz):
-    """(新增) 根據題目內容反向查找該題目在 SUBJECT_DATA 中的位置"""
+    """根據題目內容反向查找該題目在 SUBJECT_DATA 中的位置"""
     for sub, sub_data in st.session_state.SUBJECT_DATA.items():
         for cat, cat_data in sub_data.items():
             for unit, unit_data in cat_data.items():
@@ -474,7 +480,6 @@ def show_edit_quiz_page():
     quiz_index = st.session_state.edit_quiz_index
     list_key = st.session_state.edit_quiz_list_key
 
-    # 確定要編輯哪個清單
     if list_key == 'all':
         quiz_list, _ = get_current_unit_lists()
     elif list_key == 'current_quiz_list':
@@ -494,6 +499,17 @@ def show_edit_quiz_page():
     st.subheader(f"編輯來源：{quiz_to_edit.get('source_image', '手動輸入')}")
     st.markdown("---")
     
+    # 🌟 修正點 1：安全設置 SelectBox 的起始值
+    options_map = ["A", "B", "C", "D"]
+    correct_answer_upper = quiz_to_edit['correct_answer'].upper()
+    
+    try:
+        initial_index = options_map.index(correct_answer_upper)
+    except ValueError:
+        initial_index = 0
+        st.warning(f"⚠️ 偵測到無效答案 '{correct_answer_upper}'，已預設為 A。請手動修正。")
+
+
     with st.form(key="edit_quiz_form"):
         new_question = st.text_area("題目內容:", value=quiz_to_edit['question'])
 
@@ -501,8 +517,8 @@ def show_edit_quiz_page():
         for i in range(4):
             new_options.append(st.text_input(f"選項 {['A','B','C','D'][i]}:", value=quiz_to_edit['options'][i], key=f"option_{i}"))
 
-        options_map = ["A", "B", "C", "D"]
-        new_correct_answer = st.selectbox("正確答案:", options=options_map, index=options_map.index(quiz_to_edit['correct_answer'].upper()))
+        # 這裡的編輯正確答案功能是完整的
+        new_correct_answer = st.selectbox("正確答案:", options=options_map, index=initial_index)
 
         new_explanation = st.text_area("詳細解析:", value=quiz_to_edit['explanation'])
 
@@ -543,8 +559,6 @@ def start_quiz(quiz_scope, mode):
 def show_quiz_page():
     """互動式測驗頁面 (修復下一題功能，並增加編輯按鈕)"""
     
-    _, CURRENT_WRONG_QUIZZES = get_current_unit_lists()
-    
     quiz_list = st.session_state.current_quiz_list
     current_index = st.session_state.current_quiz_index
     total_quizzes = len(quiz_list)
@@ -573,7 +587,6 @@ def show_quiz_page():
     
     selected_option = st.radio("請選擇答案：", options_with_label, key=f"user_answer_radio_{current_index}")
     
-    # 使用 Container 隔離 Form，確保下一題按鈕功能獨立
     with st.container():
         
         submit_col, edit_col = st.columns([0.6, 0.4])
@@ -588,12 +601,16 @@ def show_quiz_page():
                 st.success("🎉 恭喜！答案正確！")
                 
                 if st.session_state.quiz_mode == 'review_wrong':
-                    for i, wrong_quiz in enumerate(CURRENT_WRONG_QUIZZES):
-                        if wrong_quiz['question'] == quiz['question'] and wrong_quiz['source_image'] == quiz['source_image']:
-                            del CURRENT_WRONG_QUIZZES[i]
+                    sub, cat, unit, list_key = find_quiz_location(quiz)
+                    if sub and cat and unit and list_key == 'wrong':
+                        wrong_list = st.session_state.SUBJECT_DATA[sub][cat][unit]['wrong']
+                        # 找到並移除該題目
+                        try:
+                            wrong_list.remove(quiz)
                             st.toast("👏 該錯題已掌握，從錯題清單中移除。")
                             save_data(st.session_state.SUBJECT_DATA)
-                            break
+                        except ValueError:
+                            pass # 題目已經被移除了
                             
             else:
                 st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
