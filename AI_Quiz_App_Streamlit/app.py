@@ -54,11 +54,9 @@ def initialize_session_state():
     if 'SUBJECT_DATA' not in st.session_state:
         st.session_state.SUBJECT_DATA = persisted_data 
     
-    # 用於管理主介面的導航狀態
     if 'app_state' not in st.session_state:
         st.session_state.app_state = "SELECT_SUBJECT" 
         
-    # 當前選中的層級 ID
     if 'CURRENT_SUBJECT' not in st.session_state:
         st.session_state.CURRENT_SUBJECT = None
     if 'CURRENT_CATEGORY' not in st.session_state:
@@ -66,7 +64,6 @@ def initialize_session_state():
     if 'CURRENT_UNIT' not in st.session_state:      
         st.session_state.CURRENT_UNIT = None
     
-    # 測驗狀態
     if 'quiz_mode' not in st.session_state:
         st.session_state.quiz_mode = 'quiz_all' 
     if 'current_quiz_index' not in st.session_state:
@@ -78,7 +75,6 @@ def initialize_session_state():
     if 'manual_quiz_input' not in st.session_state:
         st.session_state.manual_quiz_input = ""
     
-    # 儲存單前正在編輯的題目索引
     if 'edit_quiz_index' not in st.session_state:
         st.session_state.edit_quiz_index = None
 
@@ -447,7 +443,6 @@ def show_add_quiz_page():
         
         text_input = st.text_area(
             "請在這裡貼上或輸入題目內容",
-            value=st.session_state.manual_quiz_input, 
             height=300,
             key="manual_quiz_input"
         )
@@ -517,7 +512,6 @@ def show_edit_quiz_page():
         for i in range(4):
             new_options.append(st.text_input(f"選項 {['A','B','C','D'][i]}:", value=quiz_to_edit['options'][i], key=f"option_{i}"))
 
-        # 這裡的編輯正確答案功能是完整的
         new_correct_answer = st.selectbox("正確答案:", options=options_map, index=initial_index)
 
         new_explanation = st.text_area("詳細解析:", value=quiz_to_edit['explanation'])
@@ -604,18 +598,16 @@ def show_quiz_page():
                     sub, cat, unit, list_key = find_quiz_location(quiz)
                     if sub and cat and unit and list_key == 'wrong':
                         wrong_list = st.session_state.SUBJECT_DATA[sub][cat][unit]['wrong']
-                        # 找到並移除該題目
                         try:
                             wrong_list.remove(quiz)
                             st.toast("👏 該錯題已掌握，從錯題清單中移除。")
                             save_data(st.session_state.SUBJECT_DATA)
                         except ValueError:
-                            pass # 題目已經被移除了
+                            pass
                             
             else:
                 st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
                 
-                # 🌟 核心修正：錯題紀錄時，必須找到它原本所屬的單元清單
                 sub, cat, unit, _ = find_quiz_location(quiz)
                 
                 if sub and cat and unit:
@@ -742,4 +734,3 @@ def main_app():
 
 if __name__ == "__main__":
     main_app()
-
