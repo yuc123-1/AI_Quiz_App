@@ -27,17 +27,19 @@ def initialize_session_state():
     if 'SUBJECT_DATA' not in st.session_state:
         st.session_state.SUBJECT_DATA = {} 
     
-    # 設定當前選中的層級
+    # 用於管理主介面的導航狀態 (新增)
+    if 'app_state' not in st.session_state:
+        st.session_state.app_state = "SELECT_SUBJECT" # 狀態: SELECT_SUBJECT, SELECT_CATEGORY, UNIT_DETAIL, QUIZ, ADD
+        
+    # 當前選中的層級 ID
     if 'CURRENT_SUBJECT' not in st.session_state:
         st.session_state.CURRENT_SUBJECT = None
-    if 'CURRENT_CATEGORY' not in st.session_state: # 新增：類別層級
+    if 'CURRENT_CATEGORY' not in st.session_state:
         st.session_state.CURRENT_CATEGORY = None
-    if 'CURRENT_UNIT' not in st.session_state:      # 新增：單元層級
+    if 'CURRENT_UNIT' not in st.session_state:      
         st.session_state.CURRENT_UNIT = None
     
-    # 頁面導航和測驗狀態
-    if 'page' not in st.session_state:
-        st.session_state.page = "dashboard" 
+    # 測驗狀態
     if 'quiz_mode' not in st.session_state:
         st.session_state.quiz_mode = 'quiz_all' 
     if 'current_quiz_index' not in st.session_state:
@@ -45,14 +47,14 @@ def initialize_session_state():
     if 'current_quiz_list' not in st.session_state:
         st.session_state.current_quiz_list = [] 
     
-    # 1. 設置文字輸入框的初始值為空 (實現自動清空)
+    # 文字輸入框的初始值 (用於自動清空)
     if 'manual_quiz_input' not in st.session_state:
         st.session_state.manual_quiz_input = ""
 
 initialize_session_state()
 
 # ----------------------------------------------------
-# B. 核心功能：Gemini 題目提取 (支持圖片和文字)
+# B. 核心功能：Gemini 提取和數據訪問
 # ----------------------------------------------------
 
 RESPONSE_SCHEMA_QUIZ = {
@@ -105,29 +107,13 @@ def call_gemini_extraction(contents, source_id):
         st.exception(e)
         return []
 
-def get_current_unit_lists():
-    """返回當前選定單元的題目和錯題清單"""
-    sub = st.session_state.CURRENT_SUBJECT
-    cat = st.session_state.CURRENT_CATEGORY
-    unit = st.session_state.CURRENT_UNIT
-    
-    if sub and cat and unit:
-        # 檢查路徑是否存在
-        if sub in st.session_state.SUBJECT_DATA and \
-           cat in st.session_state.SUBJECT_DATA[sub] and \
-           unit in st.session_state.SUBJECT_DATA[sub][cat]:
-            
-            data = st.session_state.SUBJECT_DATA[sub][cat][unit]
-            return data['all'], data['wrong']
-            
-    return [], []
-
 def get_quizzes_by_scope(scope_subject, scope_category=None, scope_unit=None):
-    """(新增功能) 根據範圍返回所有題目"""
+    """根據範圍返回所有題目 (all 和 wrong 都要返回，用於範圍測驗和複習)"""
     all_quizzes = []
+    wrong_quizzes = []
     
     if scope_subject not in st.session_state.SUBJECT_DATA:
-        return []
+        return [], []
     
     for category_name, category_data in st.session_state.SUBJECT_DATA[scope_subject].items():
         if scope_category and category_name != scope_category:
@@ -137,102 +123,192 @@ def get_quizzes_by_scope(scope_subject, scope_category=None, scope_unit=None):
             if scope_unit and unit_name != scope_unit:
                 continue
             
-            # 將單元中的所有題目加入總清單
             all_quizzes.extend(unit_data['all'])
+            wrong_quizzes.extend(unit_data['wrong'])
             
-    return all_quizzes
+    return all_quizzes, wrong_quizzes
+
+def get_current_unit_lists():
+    """返回當前選定單元的題目和錯題清單"""
+    sub = st.session_state.CURRENT_SUBJECT
+    cat = st.session_state.CURRENT_CATEGORY
+    unit = st.session_state.CURRENT_UNIT
+    
+    if sub and cat and unit:
+        if sub in st.session_state.SUBJECT_DATA and \
+           cat in st.session_state.SUBJECT_DATA[sub] and \
+           unit in st.session_state.SUBJECT_DATA[sub][cat]:
+            
+            data = st.session_state.SUBJECT_DATA[sub][cat][unit]
+            return data['all'], data['wrong']
+            
+    return [], []
+
+def navigate_to(state):
+    st.session_state.app_state = state
+    st.rerun()
 
 # ----------------------------------------------------
-# C. 網站分頁和邏輯
+# D. 介面函數 (新的多頁面流程)
 # ----------------------------------------------------
 
-def show_dashboard():
-    """顯示主頁儀表板和統計數據"""
+def show_select_subject():
+    """主頁面：選擇科目/考試類型"""
     st.title("📚 AI 智慧錯題本")
-    st.header("🏠 儀表板")
+    st.header("步驟 1：選擇科目/考試類型")
     st.markdown("---")
     
-    # 獲取當前選定單元的題目數據
-    CURRENT_ALL_QUIZZES, CURRENT_WRONG_QUIZZES = get_current_unit_lists()
-    total_quizzes = len(CURRENT_ALL_QUIZZES)
-    total_wrong = len(CURRENT_WRONG_QUIZZES)
+    subjects = list(st.session_state.SUBJECT_DATA.keys())
+    
+    if not subjects:
+        st.info("您尚未創建任何科目。請使用左側邊欄創建第一個科目。")
+        return
 
-    # 狀態卡片
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.info(f"總題目數\n\n# {total_quizzes}", icon="📊")
-    with col2:
-        st.warning(f"待複習錯題\n\n# {total_wrong}", icon="❌")
-    with col3:
-        st.success(f"已掌握題數\n\n# {total_quizzes - total_wrong}", icon="✅")
+    # 顯示所有科目按鈕
+    cols = st.columns(3)
+    for i, sub_name in enumerate(subjects):
+        with cols[i % 3]:
+            # 計算該科目下的總題數
+            total_quizzes_in_sub, _ = get_quizzes_by_scope(sub_name)
+            
+            if st.button(f"🎓 {sub_name} ({len(total_quizzes_in_sub)} 題)", key=f"select_sub_{sub_name}", use_container_width=True):
+                st.session_state.CURRENT_SUBJECT = sub_name
+                st.session_state.CURRENT_CATEGORY = None # 清空下一層狀態
+                st.session_state.CURRENT_UNIT = None
+                navigate_to("SELECT_CATEGORY")
 
+def show_select_category():
+    """步驟 2：選擇類別/分卷"""
+    sub_name = st.session_state.CURRENT_SUBJECT
+    st.title(f"科目：{sub_name}")
+    st.header("步驟 2：選擇類別")
     st.markdown("---")
     
-    # 4. 範圍測驗選擇邏輯 (取代舊的測驗按鈕)
-    st.subheader("範圍測驗選擇：")
+    categories = list(st.session_state.SUBJECT_DATA.get(sub_name, {}).keys())
     
-    current_sub = st.session_state.CURRENT_SUBJECT
-    current_cat = st.session_state.CURRENT_CATEGORY
-    current_unit = st.session_state.CURRENT_UNIT
-    
-    # 測驗範圍下拉選單
-    if current_sub and current_cat:
+    if st.button("⬅️ 返回科目選擇"):
+        navigate_to("SELECT_SUBJECT")
+        return
         
-        # 1. 測驗類別下的所有單元
-        all_units_in_category = list(st.session_state.SUBJECT_DATA[current_sub][current_cat].keys())
-        
-        scope_options = [
-            f"🎯 測驗當前單元 ({current_unit})",
-            f"📚 測驗 '{current_cat}' 類別所有單元 ({len(all_units_in_category)} 個)"
-        ] + [f"單獨測驗單元: {u}" for u in all_units_in_category if u != current_unit]
-        
-        selected_scope = st.selectbox("選擇測驗範圍：", scope_options)
-        
-        # 準備測驗按鈕
-        test_button_col, review_button_col = st.columns(2)
-        
-        if test_button_col.button("📝 開始範圍測驗", use_container_width=True, type="primary"):
+    if not categories:
+        st.info(f"科目 '{sub_name}' 下沒有任何類別。請使用左側邊欄創建第一個類別。")
+        return
+
+    # 顯示所有類別
+    cols = st.columns(3)
+    for i, cat_name in enumerate(categories):
+        with cols[i % 3]:
+            # 計算該類別下的總題數
+            total_quizzes_in_cat, _ = get_quizzes_by_scope(sub_name, cat_name)
             
-            quiz_scope = None
-            if selected_scope.startswith("🎯 測驗當前單元"):
-                quiz_scope = get_quizzes_by_scope(current_sub, current_cat, current_unit)
-            elif selected_scope.startswith("📚 測驗"):
-                quiz_scope = get_quizzes_by_scope(current_sub, current_cat)
-            elif selected_scope.startswith("單獨測驗單元:"):
-                unit_name = selected_scope.split(': ')[1]
-                quiz_scope = get_quizzes_by_scope(current_sub, current_cat, unit_name)
-            
-            if quiz_scope:
-                st.session_state.page = "quiz"
-                st.session_state.quiz_mode = 'quiz_all'
-                st.session_state.current_quiz_list = random.sample(quiz_scope, len(quiz_scope))
-                st.session_state.current_quiz_index = 0
-                st.rerun()
-            else:
-                st.warning("所選範圍內沒有題目。")
+            if st.button(f"📚 {cat_name} ({len(total_quizzes_in_cat)} 題)", key=f"select_cat_{cat_name}", use_container_width=True):
+                st.session_state.CURRENT_CATEGORY = cat_name
+                st.session_state.CURRENT_UNIT = None
+                navigate_to("UNIT_DETAIL")
                 
-        if review_button_col.button(f"🔁 複習當前單元錯題 ({total_wrong} 題)", use_container_width=True, disabled=(total_wrong == 0)):
-            st.session_state.page = "quiz"
-            st.session_state.quiz_mode = 'review_wrong'
-            st.session_state.current_quiz_list = random.sample(CURRENT_WRONG_QUIZZES, len(CURRENT_WRONG_QUIZZES))
+def show_unit_details():
+    """步驟 3/4：單元詳情與測驗範圍選擇"""
+    sub_name = st.session_state.CURRENT_SUBJECT
+    cat_name = st.session_state.CURRENT_CATEGORY
+    
+    st.title(f"{sub_name} - {cat_name}")
+    st.header("步驟 3：單元選擇與測驗")
+    st.markdown("---")
+    
+    units = list(st.session_state.SUBJECT_DATA.get(sub_name, {}).get(cat_name, {}).keys())
+    
+    # 導航按鈕
+    if st.button("⬅️ 返回類別選擇"):
+        navigate_to("SELECT_CATEGORY")
+        return
+
+    if not units:
+        st.info(f"類別 '{cat_name}' 下沒有任何單元。請使用左側邊欄創建第一個單元。")
+        return
+        
+    # 主頁面統計與測驗
+    st.subheader("測驗範圍選擇：")
+    
+    # ----------------------------------------------------
+    # 範圍測驗邏輯
+    # ----------------------------------------------------
+    
+    # 總類別題目數 (用於測驗整個類別)
+    total_cat_quizzes, total_cat_wrong = get_quizzes_by_scope(sub_name, cat_name)
+    
+    # 測驗範圍選項
+    scope_options = [
+        f"📚 測驗本類別所有單元 ({len(total_cat_quizzes)} 題)",
+    ] + [f"單獨測驗單元: {u}" for u in units]
+    
+    selected_scope = st.selectbox("選擇測驗範圍：", scope_options)
+    
+    # 準備測驗按鈕
+    test_button_col, review_button_col = st.columns(2)
+    
+    def start_quiz(scope_quizzes, mode):
+        if scope_quizzes:
+            st.session_state.quiz_mode = mode
+            st.session_state.current_quiz_list = random.sample(scope_quizzes, len(scope_quizzes))
             st.session_state.current_quiz_index = 0
-            st.rerun()
+            navigate_to("QUIZ")
+        else:
+            st.warning("所選範圍內沒有題目。")
             
-    else:
-        st.warning("請在左側邊欄選擇完整的科目、類別和單元，才能進行測驗範圍選擇。")
+    # 啟動測驗按鈕
+    if test_button_col.button("📝 開始範圍測驗", use_container_width=True, type="primary"):
+        quiz_scope = []
+        if selected_scope.startswith("📚 測驗"):
+            quiz_scope = total_cat_quizzes
+        elif selected_scope.startswith("單獨測驗單元:"):
+            unit_name = selected_scope.split(': ')[1]
+            _, wrong_quizzes = get_quizzes_by_scope(sub_name, cat_name, unit_name)
+            quiz_scope = st.session_state.SUBJECT_DATA[sub_name][cat_name][unit_name]['all']
+        
+        start_quiz(quiz_scope, 'quiz_all')
+        
+    # 啟動複習按鈕 (複習整個類別下的錯題)
+    if review_button_col.button(f"🔁 複習類別錯題 ({len(total_cat_wrong)} 題)", use_container_width=True, disabled=(len(total_cat_wrong) == 0)):
+        start_quiz(total_cat_wrong, 'review_wrong')
 
     st.markdown("---")
-    # 顯示題目清單 (除錯用)
-    with st.expander(f"🔍 查看當前單元 ({current_unit}) 所有題目"):
-        st.json(CURRENT_ALL_QUIZZES)
+    st.subheader("單元列表與管理：")
+    
+    # 顯示所有單元，並提供新增題目按鈕
+    for unit_name in units:
+        unit_data = st.session_state.SUBJECT_DATA[sub_name][cat_name][unit_name]
+        all_count = len(unit_data['all'])
+        wrong_count = len(unit_data['wrong'])
         
+        col1, col2, col3 = st.columns([0.6, 0.2, 0.2])
+        
+        col1.markdown(f"**📑 {unit_name}** (總題數: {all_count} / 錯題: {wrong_count})")
+        
+        with col2:
+            if col2.button("➕ 新增題目", key=f"add_to_{unit_name}", use_container_width=True):
+                st.session_state.CURRENT_UNIT = unit_name
+                navigate_to("ADD_QUESTION")
+        
+        with col3:
+            if col3.button("測驗單元", key=f"test_unit_{unit_name}", use_container_width=True, type="secondary"):
+                st.session_state.CURRENT_UNIT = unit_name
+                start_quiz(unit_data['all'], 'quiz_all')
+
 def show_add_quiz_page():
-    """處理圖片上傳、文字輸入和題目提取頁面"""
-    st.header("➕ 新增題目：圖片或文字輸入")
+    """新增題目頁面 (圖片或文字)"""
+    sub = st.session_state.CURRENT_SUBJECT
+    cat = st.session_state.CURRENT_CATEGORY
+    unit = st.session_state.CURRENT_UNIT
+    
+    if st.button("⬅️ 返回單元列表"):
+        navigate_to("UNIT_DETAIL")
+        return
+        
+    st.title(f"新增題目到：{sub} / {cat} / {unit}")
+    st.markdown("---")
     
     CURRENT_ALL_QUIZZES, _ = get_current_unit_lists()
-    st.caption(f"題目將新增至當前單元 '{st.session_state.CURRENT_UNIT}'，目前總題數：**{len(CURRENT_ALL_QUIZZES)}** 題")
-    st.markdown("---")
+    st.caption(f"當前單元 '{unit}' 總題數：**{len(CURRENT_ALL_QUIZZES)}** 題")
 
     tab1, tab2 = st.tabs(["🖼️ 圖片上傳 (推薦)", "✍️ 文字輸入 (單題/多題)"])
 
@@ -245,12 +321,11 @@ def show_add_quiz_page():
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True
         )
-        
+        # ... (圖片上傳邏輯與之前版本相同)
         if uploaded_files:
             st.subheader(f"將處理 {len(uploaded_files)} 個檔案：")
             
             progress_bar = st.progress(0, text="開始處理圖片...")
-            
             new_quizzes = []
             for i, file in enumerate(uploaded_files):
                 progress_bar.progress((i + 1) / len(uploaded_files), text=f"正在分析圖片 {file.name}...")
@@ -291,9 +366,9 @@ def show_add_quiz_page():
 (題目間用 --- 分隔)
 """)
         
-        # 使用 st.session_state.manual_quiz_input 來綁定 text_area 的內容
         text_input = st.text_area(
             "請在這裡貼上或輸入題目內容",
+            value=st.session_state.manual_quiz_input, 
             height=300,
             key="manual_quiz_input"
         )
@@ -310,22 +385,17 @@ def show_add_quiz_page():
                         st.success(f"🎉 文字內容成功提取 **{len(quizzes)}** 道題目。")
                         st.caption(f"當前單元總題數：{len(CURRENT_ALL_QUIZZES)}")
                         
-                        # 1. 實現自動清空：將綁定的 session_state 變數設為空字串
+                        # 實現自動清空：設置為空字串並強制刷新
                         st.session_state.manual_quiz_input = "" 
                         st.rerun() 
                     else:
                         st.error("⚠️ 無法從您輸入的文字中提取出結構化的題目。請檢查格式是否正確。")
 
-    st.markdown("---")
-    if st.button("⬅️ 返回儀表板"):
-        st.session_state.page = "dashboard"
-        st.rerun()
-
-
 def show_quiz_page():
-    """互動式測驗頁面 (通用於所有題目和錯題複習)"""
+    """互動式測驗頁面"""
     
-    _, CURRENT_WRONG_QUIZZES = get_current_unit_lists()
+    # 取得當前清單的錯題清單 (用於增刪錯題紀錄)
+    _, CURRENT_WRONG_QUIZZES = get_quizzes_by_scope(st.session_state.CURRENT_SUBJECT, st.session_state.CURRENT_CATEGORY, st.session_state.CURRENT_UNIT)
     
     quiz_list = st.session_state.current_quiz_list
     current_index = st.session_state.current_quiz_index
@@ -336,9 +406,8 @@ def show_quiz_page():
         st.subheader(f"本次共完成 {total_quizzes} 題。")
         st.markdown("---")
         st.session_state.current_quiz_index = 0
-        if st.button("返回儀表板", type="primary"):
-            st.session_state.page = "dashboard"
-            st.rerun()
+        if st.button("返回主介面", type="primary"):
+            navigate_to("SELECT_SUBJECT") # 導航回科目選擇頁面
         return
 
     quiz = quiz_list[current_index]
@@ -365,6 +434,7 @@ def show_quiz_page():
             st.success("🎉 恭喜！答案正確！")
             
             if st.session_state.quiz_mode == 'review_wrong':
+                # 僅在當前單元的錯題清單中移除
                 for i, wrong_quiz in enumerate(CURRENT_WRONG_QUIZZES):
                     if wrong_quiz['question'] == quiz['question'] and wrong_quiz['source_image'] == quiz['source_image']:
                         del CURRENT_WRONG_QUIZZES[i]
@@ -374,10 +444,17 @@ def show_quiz_page():
         else:
             st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
             
-            is_already_wrong = any(w['question'] == quiz['question'] for w in CURRENT_WRONG_QUIZZES)
-            if st.session_state.quiz_mode == 'quiz_all' and not is_already_wrong:
-                CURRENT_WRONG_QUIZZES.append(quiz)
-                st.toast("😥 題目已加入錯題清單。")
+            # 如果是範圍測驗，則將錯題加入它所屬單元的錯題清單 (較複雜，先加入總錯題清單)
+            # 簡化處理：如果不是複習模式，則加入錯題清單（為了精準度，我們假設這裡的錯題會被加入到它所屬的單元錯題中）
+            
+            if st.session_state.quiz_mode == 'quiz_all':
+                # 這裡需要找到該題目原本屬於的單元，並將它加進去。
+                # 由於題目清單現在是混合的，這一步比較複雜，我們簡化為只在當前單元中操作。
+                if st.session_state.CURRENT_UNIT:
+                    current_unit_wrong_list = st.session_state.SUBJECT_DATA[st.session_state.CURRENT_SUBJECT][st.session_state.CURRENT_CATEGORY][st.session_state.CURRENT_UNIT]['wrong']
+                    if quiz not in current_unit_wrong_list:
+                        current_unit_wrong_list.append(quiz)
+                        st.toast("😥 題目已加入當前單元的錯題清單。")
             
         # 顯示詳解卡片
         with st.expander("📖 查看詳細解析", expanded=True):
@@ -390,141 +467,81 @@ def show_quiz_page():
             st.session_state.current_quiz_index += 1
             st.rerun()
             
-    if st.button("🏠 返回儀表板", key=f"back_to_dash_{current_index}"):
-        st.session_state.page = "dashboard"
+    if st.button("🏠 返回主介面", key=f"back_to_dash_{current_index}"):
+        navigate_to("SELECT_SUBJECT")
         st.rerun()
 
 # ----------------------------------------------------
-# D. 應用程式主入口
+# E. 應用程式主入口
 # ----------------------------------------------------
 
 def main_app():
     st.set_page_config(layout="wide", page_title="AI 智慧錯題本")
     
-    all_subjects = list(st.session_state.SUBJECT_DATA.keys())
-    current_subject = st.session_state.CURRENT_SUBJECT
+    # ----------------------------------------------------
+    # 左側邊欄：管理功能 (創建新項目)
+    # ----------------------------------------------------
     
-    st.sidebar.title("📚 AI 智慧錯題本")
-    st.sidebar.header("📝 數據管理區")
+    st.sidebar.title("📚 數據創建區")
+    
+    current_sub = st.session_state.CURRENT_SUBJECT
+    current_cat = st.session_state.CURRENT_CATEGORY
+    current_unit = st.session_state.CURRENT_UNIT
 
-    # --- 1. 科目管理 ---
-    with st.sidebar.expander("🎓 管理科目/考試類型"):
-        new_subject_name = st.text_input("輸入新科目名稱", key="new_subject_name")
-        if st.button("創建新科目", key="create_subject_btn"):
+    # 1. 科目管理
+    with st.sidebar.expander("🎓 創建新科目/考試類型"):
+        new_subject_name = st.text_input("輸入新科目名稱", key="side_new_subject_name")
+        if st.button("創建科目", key="side_create_subject_btn"):
             if new_subject_name and new_subject_name not in st.session_state.SUBJECT_DATA:
                 st.session_state.SUBJECT_DATA[new_subject_name] = {}
                 st.success(f"科目 '{new_subject_name}' 創建成功！")
                 st.session_state.CURRENT_SUBJECT = new_subject_name
-                st.rerun()
+                navigate_to("SELECT_SUBJECT")
             elif new_subject_name:
                 st.error("科目名稱已存在！")
-
-    # 2. 選擇科目 (自動將最近創建的科目放在最前)
-    sorted_subjects = [current_subject] + [s for s in all_subjects if s != current_subject] if current_subject in all_subjects else all_subjects
     
-    selected_subject = st.sidebar.selectbox(
-        "選擇要操作的科目",
-        options=["請選擇"] + sorted_subjects,
-        index=0 if not current_subject or current_subject not in all_subjects else 1
-    )
+    # 2. 類別管理
+    if current_sub:
+        with st.sidebar.expander(f"📚 創建 {current_sub} 的類別"):
+            new_category_name = st.text_input("輸入新類別名稱 (如：實務)", key="side_new_category_name")
+            if st.button("創建類別", key="side_create_category_btn"):
+                if new_category_name and new_category_name not in st.session_state.SUBJECT_DATA[current_sub]:
+                    st.session_state.SUBJECT_DATA[current_sub][new_category_name] = {}
+                    st.success(f"類別 '{new_category_name}' 創建成功！")
+                    st.session_state.CURRENT_CATEGORY = new_category_name
+                    navigate_to("SELECT_CATEGORY")
+                elif new_category_name:
+                    st.error("類別名稱已存在！")
 
-    if selected_subject != "請選擇":
-        st.session_state.CURRENT_SUBJECT = selected_subject
-    elif current_subject in all_subjects:
-        # 如果用戶取消選擇，保持當前狀態
-        pass
-    else:
-        st.warning("請先創建或選擇一個科目。")
-        if st.session_state.page != "dashboard": st.session_state.page = "dashboard"
-        show_dashboard() 
-        return 
-        
-    st.sidebar.info(f"當前科目：**{current_subject}**")
-    
-    # --- 3. 類別管理 (新增層級) ---
-    current_categories = list(st.session_state.SUBJECT_DATA[current_subject].keys())
+    # 3. 單元管理
+    if current_sub and current_cat:
+        with st.sidebar.expander(f"📑 創建 {current_cat} 的單元"):
+            new_unit_name = st.text_area("輸入新單元名稱", key="side_new_unit_name", height=50)
+            if st.button("創建單元", key="side_create_unit_btn"):
+                if new_unit_name and new_unit_name not in st.session_state.SUBJECT_DATA[current_sub][current_cat]:
+                    st.session_state.SUBJECT_DATA[current_sub][current_cat][new_unit_name] = {'all': [], 'wrong': []}
+                    st.success(f"單元 '{new_unit_name}' 創建成功！")
+                    st.session_state.CURRENT_UNIT = new_unit_name
+                    navigate_to("UNIT_DETAIL")
+                elif new_unit_name:
+                    st.error("單元名稱已存在！")
 
-    with st.sidebar.expander(f"📚 管理類別 ({current_subject})"):
-        new_category_name = st.text_input("輸入新類別名稱 (例如：法規/實務)", key="new_category_name")
-        if st.button("創建新類別", key="create_category_btn"):
-            if new_category_name and new_category_name not in current_categories:
-                st.session_state.SUBJECT_DATA[current_subject][new_category_name] = {}
-                st.success(f"類別 '{new_category_name}' 創建成功！")
-                st.session_state.CURRENT_CATEGORY = new_category_name
-                st.rerun()
-            elif new_category_name:
-                st.error("類別名稱已存在！")
-
-    # 4. 選擇類別
-    sorted_categories = [st.session_state.CURRENT_CATEGORY] + [c for c in current_categories if c != st.session_state.CURRENT_CATEGORY] if st.session_state.CURRENT_CATEGORY in current_categories else current_categories
-
-    selected_category = st.sidebar.selectbox(
-        "選擇要操作的類別",
-        options=["請選擇"] + sorted_categories,
-        index=0 if not st.session_state.CURRENT_CATEGORY or st.session_state.CURRENT_CATEGORY not in current_categories else 1
-    )
-
-    if selected_category != "請選擇":
-        st.session_state.CURRENT_CATEGORY = selected_category
-    elif st.session_state.CURRENT_CATEGORY in current_categories:
-        pass
-    else:
-        st.warning("請創建或選擇一個類別。")
-        if st.session_state.page != "dashboard": st.session_state.page = "dashboard"
-        show_dashboard() 
-        return
-
-    st.sidebar.info(f"當前類別：**{st.session_state.CURRENT_CATEGORY}**")
-    
-    # --- 5. 單元管理 (單元是最低層級) ---
-    current_units = list(st.session_state.SUBJECT_DATA[current_subject][st.session_state.CURRENT_CATEGORY].keys())
-
-    with st.sidebar.expander(f"📑 管理單元 ({st.session_state.CURRENT_CATEGORY})"):
-        new_unit_name = st.text_area("輸入新單元名稱", key="new_unit_name", height=50) # 為了輸入單元名稱
-        if st.button("創建新單元", key="create_unit_btn"):
-            if new_unit_name and new_unit_name not in current_units:
-                # 這是最低層級，包含 all 和 wrong 兩個清單
-                st.session_state.SUBJECT_DATA[current_subject][st.session_state.CURRENT_CATEGORY][new_unit_name] = {'all': [], 'wrong': []}
-                st.success(f"單元 '{new_unit_name}' 創建成功！")
-                st.session_state.CURRENT_UNIT = new_unit_name
-                st.rerun()
-            elif new_unit_name:
-                st.error("單元名稱已存在！")
-
-    # 6. 選擇單元
-    sorted_units = [st.session_state.CURRENT_UNIT] + [u for u in current_units if u != st.session_state.CURRENT_UNIT] if st.session_state.CURRENT_UNIT in current_units else current_units
-
-    selected_unit = st.sidebar.selectbox(
-        "選擇要操作的單元",
-        options=["請選擇"] + sorted_units,
-        index=0 if not st.session_state.CURRENT_UNIT or st.session_state.CURRENT_UNIT not in current_units else 1
-    )
-
-    if selected_unit != "請選擇":
-        st.session_state.CURRENT_UNIT = selected_unit
-        st.sidebar.success(f"當前單元：**{selected_unit}**")
-    elif st.session_state.CURRENT_UNIT in current_units:
-        pass
-    else:
-        st.warning("請創建或選擇一個單元，才能上傳題目。")
-        if st.session_state.page != "dashboard": st.session_state.page = "dashboard"
-        show_dashboard() 
-        return
 
     # ----------------------------------------------------
-    # 主頁面導航
+    # 主頁面流程控制
     # ----------------------------------------------------
     
-    if st.sidebar.button("🏠 返回儀表板", key="sidebar_dash"):
-         st.session_state.page = "dashboard"
-         st.rerun()
-
-    if st.session_state.page == "dashboard":
-        show_dashboard()
-    elif st.session_state.page == "add":
+    if st.session_state.app_state == "SELECT_SUBJECT":
+        show_select_subject()
+    elif st.session_state.app_state == "SELECT_CATEGORY":
+        show_select_category()
+    elif st.session_state.app_state == "UNIT_DETAIL":
+        show_unit_details()
+    elif st.session_state.app_state == "ADD_QUESTION":
         show_add_quiz_page()
-    elif st.session_state.page == "quiz":
+    elif st.session_state.app_state == "QUIZ":
         show_quiz_page()
+
 
 if __name__ == "__main__":
     main_app()
