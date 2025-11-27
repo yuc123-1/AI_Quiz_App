@@ -23,13 +23,12 @@ except ValueError:
 
 def initialize_session_state():
     """初始化 Streamlit Session State"""
-    # 結構: { '科目': { '類別': { '單元': { 'all': [題目], 'wrong': [錯題] } } } }
     if 'SUBJECT_DATA' not in st.session_state:
         st.session_state.SUBJECT_DATA = {} 
     
-    # 用於管理主介面的導航狀態 (新增)
+    # 用於管理主介面的導航狀態
     if 'app_state' not in st.session_state:
-        st.session_state.app_state = "SELECT_SUBJECT" # 狀態: SELECT_SUBJECT, SELECT_CATEGORY, UNIT_DETAIL, QUIZ, ADD
+        st.session_state.app_state = "SELECT_SUBJECT" # 狀態: SELECT_SUBJECT, SELECT_CATEGORY, UNIT_DETAIL, QUIZ, ADD, BROWSE
         
     # 當前選中的層級 ID
     if 'CURRENT_SUBJECT' not in st.session_state:
@@ -50,6 +49,10 @@ def initialize_session_state():
     # 文字輸入框的初始值 (用於自動清空)
     if 'manual_quiz_input' not in st.session_state:
         st.session_state.manual_quiz_input = ""
+    
+    # 儲存單前正在編輯的題目索引 (新增)
+    if 'edit_quiz_index' not in st.session_state:
+        st.session_state.edit_quiz_index = None
 
 initialize_session_state()
 
@@ -148,8 +151,15 @@ def navigate_to(state):
     st.session_state.app_state = state
     st.rerun()
 
+def navigate_home():
+    """導航到最上層科目選擇頁面 (新增)"""
+    st.session_state.CURRENT_SUBJECT = None
+    st.session_state.CURRENT_CATEGORY = None
+    st.session_state.CURRENT_UNIT = None
+    navigate_to("SELECT_SUBJECT")
+
 # ----------------------------------------------------
-# D. 介面函數 (新的多頁面流程)
+# D. 介面函數 (多頁面流程)
 # ----------------------------------------------------
 
 def show_select_subject():
@@ -164,16 +174,14 @@ def show_select_subject():
         st.info("您尚未創建任何科目。請使用左側邊欄創建第一個科目。")
         return
 
-    # 顯示所有科目按鈕
     cols = st.columns(3)
     for i, sub_name in enumerate(subjects):
         with cols[i % 3]:
-            # 計算該科目下的總題數
             total_quizzes_in_sub, _ = get_quizzes_by_scope(sub_name)
             
             if st.button(f"🎓 {sub_name} ({len(total_quizzes_in_sub)} 題)", key=f"select_sub_{sub_name}", use_container_width=True):
                 st.session_state.CURRENT_SUBJECT = sub_name
-                st.session_state.CURRENT_CATEGORY = None # 清空下一層狀態
+                st.session_state.CURRENT_CATEGORY = None
                 st.session_state.CURRENT_UNIT = None
                 navigate_to("SELECT_CATEGORY")
 
@@ -194,18 +202,24 @@ def show_select_category():
         st.info(f"科目 '{sub_name}' 下沒有任何類別。請使用左側邊欄創建第一個類別。")
         return
 
-    # 顯示所有類別
     cols = st.columns(3)
     for i, cat_name in enumerate(categories):
         with cols[i % 3]:
-            # 計算該類別下的總題數
-            total_quizzes_in_cat, _ = get_quizzes_by_scope(sub_name, cat_name)
+            total_quizzes_in_cat, total_wrong_in_cat = get_quizzes_by_scope(sub_name, cat_name)
             
             if st.button(f"📚 {cat_name} ({len(total_quizzes_in_cat)} 題)", key=f"select_cat_{cat_name}", use_container_width=True):
                 st.session_state.CURRENT_CATEGORY = cat_name
                 st.session_state.CURRENT_UNIT = None
                 navigate_to("UNIT_DETAIL")
+            
+            # 類別層級的測驗按鈕 (新增)
+            if st.button(f"📝 測驗類別 ({len(total_quizzes_in_cat)})", key=f"test_cat_{cat_name}", use_container_width=True, type="secondary", disabled=(len(total_quizzes_in_cat) == 0)):
+                start_quiz(total_quizzes_in_cat, 'quiz_all')
                 
+            if st.button(f"🔁 複習類別錯題 ({len(total_wrong_in_cat)})", key=f"review_cat_{cat_name}", use_container_width=True, disabled=(len(total_wrong_in_cat) == 0)):
+                start_quiz(total_wrong_in_cat, 'review_wrong')
+
+
 def show_unit_details():
     """步驟 3/4：單元詳情與測驗範圍選擇"""
     sub_name = st.session_state.CURRENT_SUBJECT
@@ -233,38 +247,26 @@ def show_unit_details():
     # 範圍測驗邏輯
     # ----------------------------------------------------
     
-    # 總類別題目數 (用於測驗整個類別)
     total_cat_quizzes, total_cat_wrong = get_quizzes_by_scope(sub_name, cat_name)
     
-    # 測驗範圍選項
     scope_options = [
         f"📚 測驗本類別所有單元 ({len(total_cat_quizzes)} 題)",
     ] + [f"單獨測驗單元: {u}" for u in units]
     
     selected_scope = st.selectbox("選擇測驗範圍：", scope_options)
     
-    # 準備測驗按鈕
     test_button_col, review_button_col = st.columns(2)
     
-    def start_quiz(scope_quizzes, mode):
-        if scope_quizzes:
-            st.session_state.quiz_mode = mode
-            st.session_state.current_quiz_list = random.sample(scope_quizzes, len(scope_quizzes))
-            st.session_state.current_quiz_index = 0
-            navigate_to("QUIZ")
-        else:
-            st.warning("所選範圍內沒有題目。")
-            
-    # 啟動測驗按鈕
-    if test_button_col.button("📝 開始範圍測驗", use_container_width=True, type="primary"):
-        quiz_scope = []
-        if selected_scope.startswith("📚 測驗"):
-            quiz_scope = total_cat_quizzes
-        elif selected_scope.startswith("單獨測驗單元:"):
-            unit_name = selected_scope.split(': ')[1]
-            _, wrong_quizzes = get_quizzes_by_scope(sub_name, cat_name, unit_name)
-            quiz_scope = st.session_state.SUBJECT_DATA[sub_name][cat_name][unit_name]['all']
+    quiz_scope = []
+    if selected_scope.startswith("📚 測驗"):
+        quiz_scope = total_cat_quizzes
+    elif selected_scope.startswith("單獨測驗單元:"):
+        unit_name = selected_scope.split(': ')[1]
+        quiz_scope, _ = get_quizzes_by_scope(sub_name, cat_name, unit_name)
+
         
+    # 啟動測驗按鈕
+    if test_button_col.button("📝 開始範圍測驗", use_container_width=True, type="primary", disabled=(len(quiz_scope) == 0)):
         start_quiz(quiz_scope, 'quiz_all')
         
     # 啟動複習按鈕 (複習整個類別下的錯題)
@@ -280,19 +282,70 @@ def show_unit_details():
         all_count = len(unit_data['all'])
         wrong_count = len(unit_data['wrong'])
         
-        col1, col2, col3 = st.columns([0.6, 0.2, 0.2])
+        col1, col2, col3, col4 = st.columns([0.45, 0.18, 0.18, 0.18])
         
         col1.markdown(f"**📑 {unit_name}** (總題數: {all_count} / 錯題: {wrong_count})")
         
         with col2:
-            if col2.button("➕ 新增題目", key=f"add_to_{unit_name}", use_container_width=True):
+            if col2.button("👁️ 瀏覽題目", key=f"browse_unit_{unit_name}", use_container_width=True, disabled=(all_count == 0)):
+                st.session_state.CURRENT_UNIT = unit_name
+                navigate_to("BROWSE_UNIT")
+        
+        with col3:
+            if col3.button("➕ 新增題目", key=f"add_to_{unit_name}", use_container_width=True):
                 st.session_state.CURRENT_UNIT = unit_name
                 navigate_to("ADD_QUESTION")
         
-        with col3:
-            if col3.button("測驗單元", key=f"test_unit_{unit_name}", use_container_width=True, type="secondary"):
+        with col4:
+            if col4.button("測驗單元", key=f"test_unit_{unit_name}", use_container_width=True, type="secondary", disabled=(all_count == 0)):
                 st.session_state.CURRENT_UNIT = unit_name
                 start_quiz(unit_data['all'], 'quiz_all')
+
+def show_browse_unit_page():
+    """新增頁面：瀏覽單元內全部題目與答案 (新增)"""
+    sub = st.session_state.CURRENT_SUBJECT
+    cat = st.session_state.CURRENT_CATEGORY
+    unit = st.session_state.CURRENT_UNIT
+
+    if st.button("⬅️ 返回單元列表"):
+        navigate_to("UNIT_DETAIL")
+        return
+        
+    st.title(f"👁️ 瀏覽題目：{unit}")
+    st.caption(f"科目：{sub} / 類別：{cat}")
+    st.markdown("---")
+    
+    CURRENT_ALL_QUIZZES, _ = get_current_unit_lists()
+    
+    if not CURRENT_ALL_QUIZZES:
+        st.info("該單元目前沒有題目。")
+        return
+
+    for i, quiz in enumerate(CURRENT_ALL_QUIZZES):
+        st.subheader(f"題號 {i + 1} (來源: {quiz.get('source_image', '手動輸入')})")
+        
+        # 顯示題目
+        st.markdown(f"**{quiz['question']}**")
+
+        # 顯示選項
+        options_map = ["A", "B", "C", "D"]
+        for j, option_text in enumerate(quiz['options']):
+            prefix = "🟢" if options_map[j] == quiz['correct_answer'].upper() else "⚫"
+            st.markdown(f" {prefix} **{options_map[j]}.** {option_text.lstrip('ABCD. ')}")
+
+        # 顯示詳解和編輯按鈕
+        with st.expander("📖 查看詳解 / 編輯題目"):
+            st.markdown(f"**✅ 正確答案：** {quiz['correct_answer'].upper()}")
+            st.markdown(f"**完整解析：** {quiz['explanation']}")
+            
+            # 進入編輯模式 (新增)
+            if st.button("✏️ 編輯題目內容", key=f"edit_browse_{i}"):
+                st.session_state.edit_quiz_index = i
+                st.session_state.edit_quiz_list_key = 'all' # 告訴編輯頁面要編輯的是 'all' 清單
+                navigate_to("EDIT_QUIZ")
+                
+        st.markdown("---")
+
 
 def show_add_quiz_page():
     """新增題目頁面 (圖片或文字)"""
@@ -304,24 +357,24 @@ def show_add_quiz_page():
         navigate_to("UNIT_DETAIL")
         return
         
-    st.title(f"新增題目到：{sub} / {cat} / {unit}")
+    st.title(f"新增題目到：{unit}")
+    st.caption(f"科目：{sub} / 類別：{cat}")
     st.markdown("---")
     
     CURRENT_ALL_QUIZZES, _ = get_current_unit_lists()
     st.caption(f"當前單元 '{unit}' 總題數：**{len(CURRENT_ALL_QUIZZES)}** 題")
+    st.markdown("---")
 
     tab1, tab2 = st.tabs(["🖼️ 圖片上傳 (推薦)", "✍️ 文字輸入 (單題/多題)"])
 
-    # ----------------------------------------------------
-    # TAB 1: 圖片上傳邏輯
-    # ----------------------------------------------------
+    # ... (圖片上傳邏輯)
     with tab1:
         uploaded_files = st.file_uploader(
             "🖼️ 請選擇一或多個包含選擇題的圖片檔案上傳", 
             type=["png", "jpg", "jpeg"],
             accept_multiple_files=True
         )
-        # ... (圖片上傳邏輯與之前版本相同)
+        
         if uploaded_files:
             st.subheader(f"將處理 {len(uploaded_files)} 個檔案：")
             
@@ -347,9 +400,7 @@ def show_add_quiz_page():
                 st.caption(f"當前單元總題數：{len(CURRENT_ALL_QUIZZES)}")
 
 
-    # ----------------------------------------------------
-    # TAB 2: 文字輸入邏輯 (實現自動清空)
-    # ----------------------------------------------------
+    # ... (文字輸入邏輯)
     with tab2:
         st.markdown("##### 請依照以下格式，輸入單一或多道選擇題：")
         st.code("""
@@ -385,14 +436,21 @@ def show_add_quiz_page():
                         st.success(f"🎉 文字內容成功提取 **{len(quizzes)}** 道題目。")
                         st.caption(f"當前單元總題數：{len(CURRENT_ALL_QUIZZES)}")
                         
-                        # 實現自動清空：設置為空字串並強制刷新
                         st.session_state.manual_quiz_input = "" 
                         st.rerun() 
                     else:
                         st.error("⚠️ 無法從您輸入的文字中提取出結構化的題目。請檢查格式是否正確。")
 
+def start_quiz(quiz_scope, mode):
+    """啟動測驗的輔助函數"""
+    st.session_state.quiz_mode = mode
+    st.session_state.current_quiz_list = random.sample(quiz_scope, len(quiz_scope))
+    st.session_state.current_quiz_index = 0
+    navigate_to("QUIZ")
+
+
 def show_quiz_page():
-    """互動式測驗頁面"""
+    """互動式測驗頁面 (修復下一題功能，並增加編輯按鈕)"""
     
     # 取得當前清單的錯題清單 (用於增刪錯題紀錄)
     _, CURRENT_WRONG_QUIZZES = get_quizzes_by_scope(st.session_state.CURRENT_SUBJECT, st.session_state.CURRENT_CATEGORY, st.session_state.CURRENT_UNIT)
@@ -407,7 +465,7 @@ def show_quiz_page():
         st.markdown("---")
         st.session_state.current_quiz_index = 0
         if st.button("返回主介面", type="primary"):
-            navigate_to("SELECT_SUBJECT") # 導航回科目選擇頁面
+            navigate_home()
         return
 
     quiz = quiz_list[current_index]
@@ -425,51 +483,130 @@ def show_quiz_page():
     
     selected_option = st.radio("請選擇答案：", options_with_label, key=f"user_answer_radio_{current_index}")
     
-    if st.button("✅ 提交答案", key=f"submit_button_{current_index}"):
+    # 使用 Form 確保在提交答案後，其他元件的狀態不會被立刻覆蓋 (用於解決下一題無反應問題)
+    with st.form(key=f"quiz_form_{current_index}"):
         
-        selected_letter = selected_option.split('.')[0]
-        correct_answer_letter = quiz['correct_answer'].upper().strip()
-        
-        if selected_letter == correct_answer_letter:
-            st.success("🎉 恭喜！答案正確！")
-            
-            if st.session_state.quiz_mode == 'review_wrong':
-                # 僅在當前單元的錯題清單中移除
-                for i, wrong_quiz in enumerate(CURRENT_WRONG_QUIZZES):
-                    if wrong_quiz['question'] == quiz['question'] and wrong_quiz['source_image'] == quiz['source_image']:
-                        del CURRENT_WRONG_QUIZZES[i]
-                        st.toast("👏 該錯題已掌握，從錯題清單中移除。")
-                        break
-                        
-        else:
-            st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
-            
-            # 如果是範圍測驗，則將錯題加入它所屬單元的錯題清單 (較複雜，先加入總錯題清單)
-            # 簡化處理：如果不是複習模式，則加入錯題清單（為了精準度，我們假設這裡的錯題會被加入到它所屬的單元錯題中）
-            
-            if st.session_state.quiz_mode == 'quiz_all':
-                # 這裡需要找到該題目原本屬於的單元，並將它加進去。
-                # 由於題目清單現在是混合的，這一步比較複雜，我們簡化為只在當前單元中操作。
-                if st.session_state.CURRENT_UNIT:
-                    current_unit_wrong_list = st.session_state.SUBJECT_DATA[st.session_state.CURRENT_SUBJECT][st.session_state.CURRENT_CATEGORY][st.session_state.CURRENT_UNIT]['wrong']
-                    if quiz not in current_unit_wrong_list:
-                        current_unit_wrong_list.append(quiz)
-                        st.toast("😥 題目已加入當前單元的錯題清單。")
-            
-        # 顯示詳解卡片
-        with st.expander("📖 查看詳細解析", expanded=True):
-            st.info(f"**✅ 正確答案：** {correct_answer_letter}")
-            st.markdown("#### 完整解析：")
-            st.markdown(quiz['explanation'])
+        submit_col, edit_col = st.columns([0.6, 0.4])
+        submitted = submit_col.form_submit_button("✅ 提交答案", type="primary")
 
-        st.markdown("---")
-        if st.button("➡️ 下一題", type="primary"):
-            st.session_state.current_quiz_index += 1
-            st.rerun()
+        if submitted:
             
-    if st.button("🏠 返回主介面", key=f"back_to_dash_{current_index}"):
-        navigate_to("SELECT_SUBJECT")
-        st.rerun()
+            selected_letter = selected_option.split('.')[0]
+            correct_answer_letter = quiz['correct_answer'].upper().strip()
+            
+            if selected_letter == correct_answer_letter:
+                st.success("🎉 恭喜！答案正確！")
+                
+                if st.session_state.quiz_mode == 'review_wrong':
+                    # 邏輯不變
+                    for i, wrong_quiz in enumerate(CURRENT_WRONG_QUIZZES):
+                        if wrong_quiz['question'] == quiz['question'] and wrong_quiz['source_image'] == quiz['source_image']:
+                            del CURRENT_WRONG_QUIZZES[i]
+                            st.toast("👏 該錯題已掌握，從錯題清單中移除。")
+                            break
+                            
+            else:
+                st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
+                
+                # 邏輯不變
+                is_already_wrong = any(w['question'] == quiz['question'] for w in CURRENT_WRONG_QUIZZES)
+                if st.session_state.quiz_mode == 'quiz_all' and not is_already_wrong:
+                    st.session_state.SUBJECT_DATA[st.session_state.CURRENT_SUBJECT][st.session_state.CURRENT_CATEGORY][st.session_state.CURRENT_UNIT]['wrong'].append(quiz)
+                    st.toast("😥 題目已加入當前單元的錯題清單。")
+                
+            # 顯示詳解卡片
+            with st.expander("📖 查看詳細解析", expanded=True):
+                st.info(f"**✅ 正確答案：** {correct_answer_letter}")
+                st.markdown("#### 完整解析：")
+                st.markdown(quiz['explanation'])
+
+            # 下一題按鈕 (修復邏輯，放在提交結果後)
+            st.markdown("---")
+            if st.button("➡️ 下一題", key=f"next_button_{current_index}"):
+                st.session_state.current_quiz_index += 1
+                st.rerun()
+
+        # 手動編輯按鈕 (在 Form 內)
+        with edit_col:
+            if edit_col.button("✏️ 編輯題目", key=f"edit_quiz_{current_index}", disabled=not submitted):
+                 # 設置狀態準備進入編輯頁面
+                 st.session_state.edit_quiz_index = current_index
+                 st.session_state.edit_quiz_list_key = 'current_quiz_list' # 告訴編輯頁面要編輯這個臨時測驗清單
+                 navigate_to("EDIT_QUIZ")
+
+
+def show_edit_quiz_page():
+    """新增頁面：手動編輯題目內容 (新增)"""
+    
+    st.title("✏️ 編輯題目內容")
+    st.caption("用於修正 AI 偵測錯誤的題目、答案或解析。")
+    st.markdown("---")
+    
+    quiz_index = st.session_state.edit_quiz_index
+    list_key = st.session_state.edit_quiz_list_key
+
+    # 確定要編輯哪個清單
+    if list_key == 'all':
+        quiz_list, _ = get_current_unit_lists()
+    elif list_key == 'current_quiz_list':
+        quiz_list = st.session_state.current_quiz_list
+    else:
+        st.error("編輯狀態錯誤，找不到要編輯的題目清單。")
+        if st.button("返回"): navigate_to("UNIT_DETAIL")
+        return
+
+    # 獲取題目
+    if 0 <= quiz_index < len(quiz_list):
+        quiz_to_edit = quiz_list[quiz_index]
+    else:
+        st.error("找不到該索引的題目。")
+        if st.button("返回"): navigate_to("UNIT_DETAIL")
+        return
+
+    st.subheader(f"編輯來源：{quiz_to_edit.get('source_image', '手動輸入')}")
+    st.markdown("---")
+    
+    # 使用 Form 收集用戶修改後的數據
+    with st.form(key="edit_quiz_form"):
+        # 題目
+        new_question = st.text_area("題目內容:", value=quiz_to_edit['question'])
+
+        # 選項
+        new_options = []
+        for i in range(4):
+            new_options.append(st.text_input(f"選項 {['A','B','C','D'][i]}:", value=quiz_to_edit['options'][i], key=f"option_{i}"))
+
+        # 正確答案
+        options_map = ["A", "B", "C", "D"]
+        new_correct_answer = st.selectbox("正確答案:", options=options_map, index=options_map.index(quiz_to_edit['correct_answer'].upper()))
+
+        # 解析
+        new_explanation = st.text_area("詳細解析:", value=quiz_to_edit['explanation'])
+
+        submit_edit = st.form_submit_button("✅ 儲存修改", type="primary")
+
+    if submit_edit:
+        # 執行更新
+        quiz_list[quiz_index]['question'] = new_question
+        quiz_list[quiz_index]['options'] = new_options
+        quiz_list[quiz_index]['correct_answer'] = new_correct_answer
+        quiz_list[quiz_index]['explanation'] = new_explanation
+        
+        st.success("🎉 題目內容已成功更新！")
+        
+        # 導航回原來的頁面
+        if list_key == 'all':
+            navigate_to("BROWSE_UNIT")
+        elif list_key == 'current_quiz_list':
+            st.session_state.current_quiz_index = quiz_index # 保持在當前測驗題
+            navigate_to("QUIZ")
+
+
+    if st.button("⬅️ 取消/返回"):
+        if list_key == 'all':
+            navigate_to("BROWSE_UNIT")
+        elif list_key == 'current_quiz_list':
+            navigate_to("QUIZ")
 
 # ----------------------------------------------------
 # E. 應用程式主入口
@@ -525,12 +662,19 @@ def main_app():
                     navigate_to("UNIT_DETAIL")
                 elif new_unit_name:
                     st.error("單元名稱已存在！")
-
-
+    
     # ----------------------------------------------------
     # 主頁面流程控制
     # ----------------------------------------------------
     
+    # 4. 全局返回主畫面按鈕
+    with st.container():
+        st.markdown('<div style="position:fixed; top:10px; right:10px; z-index:1000;">', unsafe_allow_html=True)
+        if st.button("🏠 回主畫面", key="global_home_button"):
+            navigate_home()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
     if st.session_state.app_state == "SELECT_SUBJECT":
         show_select_subject()
     elif st.session_state.app_state == "SELECT_CATEGORY":
@@ -539,9 +683,14 @@ def main_app():
         show_unit_details()
     elif st.session_state.app_state == "ADD_QUESTION":
         show_add_quiz_page()
+    elif st.session_state.app_state == "BROWSE_UNIT":
+        show_browse_unit_page()
+    elif st.session_state.app_state == "EDIT_QUIZ":
+        show_edit_quiz_page()
     elif st.session_state.app_state == "QUIZ":
         show_quiz_page()
 
 
 if __name__ == "__main__":
     main_app()
+
