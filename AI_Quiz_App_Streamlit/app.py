@@ -7,12 +7,10 @@ from google import genai
 from google.genai.errors import APIError
 
 # --- 配置區 ---
-# ⚠️ 注意：請確保此處的金鑰是您有效的 Gemini API 金鑰
 API_KEY = "AIzaSyCd214KXU0JCD_FRx1IEpCAiC9R39z7H1M" 
 MODEL_NAME = "gemini-2.5-flash"
-DATA_FILE = "quiz_data.json" # 數據儲存檔案名稱
+DATA_FILE = "quiz_data.json" 
 
-# 初始化 Gemini 客戶端
 try:
     client = genai.Client(api_key=API_KEY)
 except ValueError:
@@ -43,7 +41,7 @@ def save_data(data):
         st.error(f"❌ 數據保存失敗: {e}")
 
 # ----------------------------------------------------
-# B. 全局狀態初始化 (使用 st.session_state)
+# B. 全局狀態初始化 (應用程式核心數據結構)
 # ----------------------------------------------------
 
 def initialize_session_state():
@@ -71,7 +69,6 @@ def initialize_session_state():
     if 'current_quiz_list' not in st.session_state:
         st.session_state.current_quiz_list = [] 
     
-    # 文字輸入框的初始值 (用於自動清空)
     if 'manual_quiz_input' not in st.session_state:
         st.session_state.manual_quiz_input = ""
     
@@ -123,6 +120,7 @@ def call_gemini_extraction(contents, source_id):
         
         for quiz_data in quiz_list:
              quiz_data['source_image'] = source_id 
+             quiz_data['star_rating'] = 0 # 🌟 新增: 預設為 0 顆星
         return quiz_list
         
     except APIError as e:
@@ -136,23 +134,21 @@ def call_gemini_extraction(contents, source_id):
 
 def find_quiz_location(quiz):
     """根據題目內容反向查找該題目在 SUBJECT_DATA 中的位置"""
+    # 此函數現在用於確定題目所屬的單元，以便更新其星級評分
     for sub, sub_data in st.session_state.SUBJECT_DATA.items():
         for cat, cat_data in sub_data.items():
             for unit, unit_data in cat_data.items():
-                # 檢查 all 和 wrong 清單
+                # 題目只應該存在於 'all' 清單中 (因為 'wrong' 清單已移除)
                 if quiz in unit_data['all']:
                     return sub, cat, unit, 'all'
-                if quiz in unit_data['wrong']:
-                    return sub, cat, unit, 'wrong'
     return None, None, None, None
 
 def get_quizzes_by_scope(scope_subject, scope_category=None, scope_unit=None):
-    """根據範圍返回所有題目 (all 和 wrong)"""
+    """根據範圍返回所有題目 (all)"""
     all_quizzes = []
-    wrong_quizzes = []
     
     if scope_subject not in st.session_state.SUBJECT_DATA:
-        return [], []
+        return []
     
     for category_name, category_data in st.session_state.SUBJECT_DATA[scope_subject].items():
         if scope_category and category_name != scope_category:
@@ -163,12 +159,11 @@ def get_quizzes_by_scope(scope_subject, scope_category=None, scope_unit=None):
                 continue
             
             all_quizzes.extend(unit_data['all'])
-            wrong_quizzes.extend(unit_data['wrong'])
             
-    return all_quizzes, wrong_quizzes
+    return all_quizzes
 
 def get_current_unit_lists():
-    """返回當前選定單元的題目和錯題清單"""
+    """返回當前選定單元的題目清單"""
     sub = st.session_state.CURRENT_SUBJECT
     cat = st.session_state.CURRENT_CATEGORY
     unit = st.session_state.CURRENT_UNIT
@@ -179,9 +174,9 @@ def get_current_unit_lists():
            unit in st.session_state.SUBJECT_DATA[sub][cat]:
             
             data = st.session_state.SUBJECT_DATA[sub][cat][unit]
-            return data['all'], data['wrong']
+            return data['all']
             
-    return [], []
+    return []
 
 def navigate_to(state):
     st.session_state.app_state = state
@@ -213,7 +208,7 @@ def show_select_subject():
     cols = st.columns(3)
     for i, sub_name in enumerate(subjects):
         with cols[i % 3]:
-            total_quizzes_in_sub, _ = get_quizzes_by_scope(sub_name)
+            total_quizzes_in_sub = get_quizzes_by_scope(sub_name)
             
             if st.button(f"🎓 {sub_name} ({len(total_quizzes_in_sub)} 題)", key=f"select_sub_{sub_name}", use_container_width=True):
                 st.session_state.CURRENT_SUBJECT = sub_name
@@ -241,7 +236,7 @@ def show_select_category():
     cols = st.columns(3)
     for i, cat_name in enumerate(categories):
         with cols[i % 3]:
-            total_quizzes_in_cat, total_wrong_in_cat = get_quizzes_by_scope(sub_name, cat_name)
+            total_quizzes_in_cat = get_quizzes_by_scope(sub_name, cat_name)
             
             if st.button(f"📚 {cat_name} ({len(total_quizzes_in_cat)} 題)", key=f"select_cat_{cat_name}", use_container_width=True):
                 st.session_state.CURRENT_CATEGORY = cat_name
@@ -251,8 +246,17 @@ def show_select_category():
             if st.button(f"📝 測驗類別 ({len(total_quizzes_in_cat)})", key=f"test_cat_{cat_name}", use_container_width=True, type="secondary", disabled=(len(total_quizzes_in_cat) == 0)):
                 start_quiz(total_quizzes_in_cat, 'quiz_all')
                 
-            if st.button(f"🔁 複習類別錯題 ({len(total_wrong_in_cat)})", key=f"review_cat_{cat_name}", use_container_width=True, disabled=(len(total_wrong_in_cat) == 0)):
-                start_quiz(total_wrong_in_cat, 'review_wrong')
+            # 類別層級的複習，現在也需要星級篩選
+            st.markdown("---")
+            st.caption("類別複習 (星級)")
+            star_options = [f"≤ {i} 星" for i in range(4)]
+            star_level = st.selectbox("選擇星級範圍:", star_options, key=f"cat_star_{cat_name}")
+            
+            max_star = int(star_level.split(" ")[1])
+            filtered_quizzes = [q for q in total_quizzes_in_cat if q.get('star_rating', 0) <= max_star]
+            
+            if st.button(f"🔁 複習類別 ({len(filtered_quizzes)} 題)", key=f"review_cat_{cat_name}", use_container_width=True, disabled=(len(filtered_quizzes) == 0)):
+                start_quiz(filtered_quizzes, 'review_star')
 
 
 def show_unit_details():
@@ -277,7 +281,7 @@ def show_unit_details():
     # 主頁面統計與測驗
     st.subheader("測驗範圍選擇：")
     
-    total_cat_quizzes, total_cat_wrong = get_quizzes_by_scope(sub_name, cat_name)
+    total_cat_quizzes = get_quizzes_by_scope(sub_name, cat_name)
     
     scope_options = [
         f"📚 測驗本類別所有單元 ({len(total_cat_quizzes)} 題)",
@@ -285,36 +289,48 @@ def show_unit_details():
     
     selected_scope = st.selectbox("選擇測驗範圍：", scope_options)
     
+    # ----------------------------------------------------
+    # 範圍篩選 (星級)
+    # ----------------------------------------------------
+    star_options = [f"≤ {i} 星" for i in range(4)]
+    star_level = st.selectbox("過濾星級範圍：", star_options, index=0) # 預設只做 0 星
+    max_star = int(star_level.split(" ")[1])
+    
     test_button_col, review_button_col = st.columns(2)
     
+    # 確定測驗的目標清單
     quiz_scope = []
     if selected_scope.startswith("📚 測驗"):
         quiz_scope = total_cat_quizzes
     elif selected_scope.startswith("單獨測驗單元:"):
         unit_name = selected_scope.split(': ')[1]
-        quiz_scope, _ = get_quizzes_by_scope(sub_name, cat_name, unit_name)
-
+        quiz_scope = get_quizzes_by_scope(sub_name, cat_name, unit_name)
         
-    if test_button_col.button("📝 開始範圍測驗", use_container_width=True, type="primary", disabled=(len(quiz_scope) == 0)):
-        start_quiz(quiz_scope, 'quiz_all')
+    # 應用星級過濾
+    filtered_quizzes = [q for q in quiz_scope if q.get('star_rating', 0) <= max_star]
         
-    if review_button_col.button(f"🔁 複習類別錯題 ({len(total_cat_wrong)} 題)", use_container_width=True, disabled=(len(total_cat_wrong) == 0)):
-        start_quiz(total_cat_wrong, 'review_wrong')
+    if test_button_col.button(f"📝 開始範圍測驗 ({len(filtered_quizzes)} 題)", use_container_width=True, type="primary", disabled=(len(filtered_quizzes) == 0)):
+        start_quiz(filtered_quizzes, 'quiz_all')
+        
+    if review_button_col.button(f"🔁 複習全類別低星級 ({len(filtered_quizzes)} 題)", use_container_width=True, disabled=(len(filtered_quizzes) == 0)):
+        start_quiz(filtered_quizzes, 'review_star')
 
     st.markdown("---")
     st.subheader("單元列表與管理：")
     
     for unit_name in units:
         unit_data = st.session_state.SUBJECT_DATA[sub_name][cat_name][unit_name]
-        all_count = len(unit_data['all'])
-        wrong_count = len(unit_data['wrong'])
+        all_quizzes = unit_data['all']
+        
+        # 計算星級分佈
+        star_counts = {i: sum(1 for q in all_quizzes if q.get('star_rating', 0) == i) for i in range(4)}
         
         col1, col2, col3, col4 = st.columns([0.45, 0.18, 0.18, 0.18])
         
-        col1.markdown(f"**📑 {unit_name}** (總題數: {all_count} / 錯題: {wrong_count})")
+        col1.markdown(f"**📑 {unit_name}** (總題數: {len(all_quizzes)} / 🌟 0星: {star_counts[0]})")
         
         with col2:
-            if col2.button("👁️ 瀏覽題目", key=f"browse_unit_{unit_name}", use_container_width=True, disabled=(all_count == 0)):
+            if col2.button("👁️ 瀏覽題目", key=f"browse_unit_{unit_name}", use_container_width=True, disabled=(len(all_quizzes) == 0)):
                 st.session_state.CURRENT_UNIT = unit_name
                 navigate_to("BROWSE_UNIT")
         
@@ -324,12 +340,12 @@ def show_unit_details():
                 navigate_to("ADD_QUESTION")
         
         with col4:
-            if col4.button("測驗單元", key=f"test_unit_{unit_name}", use_container_width=True, type="secondary", disabled=(all_count == 0)):
+            if col4.button("測驗單元", key=f"test_unit_{unit_name}", use_container_width=True, type="secondary", disabled=(len(all_quizzes) == 0)):
                 st.session_state.CURRENT_UNIT = unit_name
-                start_quiz(unit_data['all'], 'quiz_all')
+                start_quiz(all_quizzes, 'quiz_all')
 
 def show_browse_unit_page():
-    """新增頁面：瀏覽單元內全部題目與答案"""
+    """瀏覽單元內全部題目與答案"""
     sub = st.session_state.CURRENT_SUBJECT
     cat = st.session_state.CURRENT_CATEGORY
     unit = st.session_state.CURRENT_UNIT
@@ -342,14 +358,15 @@ def show_browse_unit_page():
     st.caption(f"科目：{sub} / 類別：{cat}")
     st.markdown("---")
     
-    CURRENT_ALL_QUIZZES, _ = get_current_unit_lists()
+    CURRENT_ALL_QUIZZES = get_current_unit_lists()
     
     if not CURRENT_ALL_QUIZZES:
         st.info("該單元目前沒有題目。")
         return
 
     for i, quiz in enumerate(CURRENT_ALL_QUIZZES):
-        st.subheader(f"題號 {i + 1} (來源: {quiz.get('source_image', '手動輸入')})")
+        stars = "⭐" * quiz.get('star_rating', 0) + "⚫" * (3 - quiz.get('star_rating', 0))
+        st.subheader(f"題號 {i + 1} | {stars} (來源: {quiz.get('source_image', '手動輸入')})")
         
         st.markdown(f"**{quiz['question']}**")
 
@@ -384,13 +401,12 @@ def show_add_quiz_page():
     st.caption(f"科目：{sub} / 類別：{cat}")
     st.markdown("---")
     
-    CURRENT_ALL_QUIZZES, _ = get_current_unit_lists()
+    CURRENT_ALL_QUIZZES = get_current_unit_lists()
     st.caption(f"當前單元 '{unit}' 總題數：**{len(CURRENT_ALL_QUIZZES)}** 題")
     st.markdown("---")
 
     tab1, tab2 = st.tabs(["🖼️ 圖片上傳 (推薦)", "✍️ 文字輸入 (單題/多題)"])
 
-    # ... (圖片上傳邏輯)
     with tab1:
         uploaded_files = st.file_uploader(
             "🖼️ 請選擇一或多個包含選擇題的圖片檔案上傳", 
@@ -423,8 +439,6 @@ def show_add_quiz_page():
                 st.success(f"🎉 處理完成！總共新增 **{len(new_quizzes)}** 道題目。")
                 st.caption(f"當前單元總題數：{len(CURRENT_ALL_QUIZZES)}")
 
-
-    # ... (文字輸入邏輯)
     with tab2:
         st.markdown("##### 請依照以下格式，輸入單一或多道選擇題：")
         st.code("""
@@ -476,7 +490,7 @@ def show_edit_quiz_page():
     list_key = st.session_state.edit_quiz_list_key
 
     if list_key == 'all':
-        quiz_list, _ = get_current_unit_lists()
+        quiz_list = get_current_unit_lists()
     elif list_key == 'current_quiz_list':
         quiz_list = st.session_state.current_quiz_list
     else:
@@ -491,10 +505,9 @@ def show_edit_quiz_page():
         if st.button("返回"): navigate_to("UNIT_DETAIL")
         return
 
-    st.subheader(f"編輯來源：{quiz_to_edit.get('source_image', '手動輸入')}")
+    st.subheader(f"編輯來源：{quiz_to_edit.get('source_image', '手動輸入')} | 星級: {quiz_to_edit.get('star_rating', 0)}⭐")
     st.markdown("---")
     
-    # 🌟 修正點 1：安全設置 SelectBox 的起始值
     options_map = ["A", "B", "C", "D"]
     correct_answer_upper = quiz_to_edit['correct_answer'].upper()
     
@@ -513,6 +526,9 @@ def show_edit_quiz_page():
             new_options.append(st.text_input(f"選項 {['A','B','C','D'][i]}:", value=quiz_to_edit['options'][i], key=f"option_{i}"))
 
         new_correct_answer = st.selectbox("正確答案:", options=options_map, index=initial_index)
+        
+        # 🌟 新增: 編輯星級評分
+        new_star_rating = st.select_slider("手動設置星級 (0-3):", options=[0, 1, 2, 3], value=quiz_to_edit.get('star_rating', 0))
 
         new_explanation = st.text_area("詳細解析:", value=quiz_to_edit['explanation'])
 
@@ -524,6 +540,7 @@ def show_edit_quiz_page():
         quiz_list[quiz_index]['options'] = new_options
         quiz_list[quiz_index]['correct_answer'] = new_correct_answer
         quiz_list[quiz_index]['explanation'] = new_explanation
+        quiz_list[quiz_index]['star_rating'] = new_star_rating # 🌟 更新星級
         
         save_data(st.session_state.SUBJECT_DATA)
         st.success("🎉 題目內容已成功更新！")
@@ -545,6 +562,7 @@ def show_edit_quiz_page():
 def start_quiz(quiz_scope, mode):
     """啟動測驗的輔助函數"""
     st.session_state.quiz_mode = mode
+    # 🌟 測驗時，必須先打亂，再設置清單
     st.session_state.current_quiz_list = random.sample(quiz_scope, len(quiz_scope))
     st.session_state.current_quiz_index = 0
     navigate_to("QUIZ")
@@ -568,8 +586,9 @@ def show_quiz_page():
 
     quiz = quiz_list[current_index]
     
-    mode_text = "🎯 範圍測驗" if st.session_state.quiz_mode == 'quiz_all' else "🧠 錯題複習模式"
-    st.header(f"{mode_text} (第 {current_index + 1} / {total_quizzes} 題)")
+    stars = "⭐" * quiz.get('star_rating', 0) + "⚫" * (3 - quiz.get('star_rating', 0))
+    mode_text = "🎯 範圍測驗" if st.session_state.quiz_mode == 'quiz_all' else "🧠 低星級複習"
+    st.header(f"{mode_text} (第 {current_index + 1} / {total_quizzes} 題) | {stars}")
     st.caption(f"來源：**{quiz['source_image']}**")
     st.markdown("---")
 
@@ -581,6 +600,7 @@ def show_quiz_page():
     
     selected_option = st.radio("請選擇答案：", options_with_label, key=f"user_answer_radio_{current_index}")
     
+    # 使用 Form 確保在提交答案後，其他元件的狀態不會被立刻覆蓋 (用於解決下一題無反應問題)
     with st.container():
         
         submit_col, edit_col = st.columns([0.6, 0.4])
@@ -591,34 +611,32 @@ def show_quiz_page():
             selected_letter = selected_option.split('.')[0]
             correct_answer_letter = quiz['correct_answer'].upper().strip()
             
-            if selected_letter == correct_answer_letter:
-                st.success("🎉 恭喜！答案正確！")
+            # 🌟 查找題目在 SUBJECT_DATA 中的真實位置
+            sub, cat, unit, _ = find_quiz_location(quiz)
+            
+            if sub and cat and unit:
+                # 找到該題目物件的引用，才能更新其星級
+                target_unit_list = st.session_state.SUBJECT_DATA[sub][cat][unit]['all']
                 
-                if st.session_state.quiz_mode == 'review_wrong':
-                    sub, cat, unit, list_key = find_quiz_location(quiz)
-                    if sub and cat and unit and list_key == 'wrong':
-                        wrong_list = st.session_state.SUBJECT_DATA[sub][cat][unit]['wrong']
-                        try:
-                            wrong_list.remove(quiz)
-                            st.toast("👏 該錯題已掌握，從錯題清單中移除。")
-                            save_data(st.session_state.SUBJECT_DATA)
-                        except ValueError:
-                            pass
+                # 遍歷尋找該題目物件
+                for target_quiz in target_unit_list:
+                    if target_quiz['question'] == quiz['question']:
+                        
+                        if selected_letter == correct_answer_letter:
+                            # 答對：星級 +1，最高 3 顆星
+                            new_rating = min(target_quiz.get('star_rating', 0) + 1, 3)
+                            st.success(f"🎉 恭喜！答案正確！ 星級提升至 {new_rating} ⭐")
                             
-            else:
-                st.error(f"❌ 抱歉，答案錯誤。您選擇了 **{selected_letter}**。")
-                
-                sub, cat, unit, _ = find_quiz_location(quiz)
-                
-                if sub and cat and unit:
-                    wrong_list_target = st.session_state.SUBJECT_DATA[sub][cat][unit]['wrong']
-                    is_already_wrong = any(w['question'] == quiz['question'] for w in wrong_list_target)
-
-                    if st.session_state.quiz_mode == 'quiz_all' and not is_already_wrong:
-                        wrong_list_target.append(quiz)
-                        st.toast("😥 題目已加入原單元的錯題清單。")
+                        else:
+                            # 答錯：星級歸零
+                            new_rating = 0
+                            st.error(f"❌ 抱歉，答案錯誤。星級重置為 {new_rating} ⭐。")
+                        
+                        # 更新數據
+                        target_quiz['star_rating'] = new_rating
                         save_data(st.session_state.SUBJECT_DATA)
-                
+                        break
+            
             # 顯示詳解卡片
             with st.expander("📖 查看詳細解析", expanded=True):
                 st.info(f"**✅ 正確答案：** {correct_answer_letter}")
@@ -629,7 +647,7 @@ def show_quiz_page():
             st.session_state[f'show_next_{current_index}'] = True
             
         
-        # 手動編輯按鈕 (在 Form 外，但受提交狀態影響)
+        # 手動編輯按鈕 
         if edit_col.button("✏️ 編輯題目", key=f"edit_quiz_{current_index}"):
              st.session_state.edit_quiz_index = current_index
              st.session_state.edit_quiz_list_key = 'current_quiz_list' 
